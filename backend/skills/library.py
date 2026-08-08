@@ -23,13 +23,13 @@ import json
 import logging
 from typing import Any, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
 from sqlalchemy import select
 
 from backend.config.settings import settings
 from backend.database.models import Skill, SkillSource, SkillVersion
 from backend.database.session import get_session
+from backend.search import get_vector_index
+from backend.search.text_rank import rank_candidates
 
 logger = logging.getLogger("nexus.skills")
 
@@ -56,11 +56,17 @@ def _now() -> dt.datetime:
 
 class SkillService:
     def __init__(self) -> None:
-        self._chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        self._collection = self._chroma_client.get_or_create_collection("nexus_skills")
+        # `self._collection` is a VectorIndex (backend.search): a
+        # ChromaVectorIndex wrapping the real "nexus_skills" chroma
+        # collection when ChromaDB is available on this platform, or a
+        # NullVectorIndex (Android/Termux, or chroma init failure) whose
+        # upsert/query/delete are safe no-ops. ChromaDB here is purely a
+        # semantic-acceleration/index layer on top of the Skill table --
+        # `semantic_search` falls back to keyword ranking over SQLite
+        # (backend.search.text_rank) when `self._collection.available` is
+        # False, so skill creation/update/delete/matching all keep working
+        # without it.
+        self._collection = get_vector_index("nexus_skills")
 
         # task_id -> draft skill dict, registered by TaskQueueService right
         # after a task succeeds. Ephemeral by design (process-lifetime only)
@@ -437,11 +443,14 @@ class SkillService:
             logger.exception("Failed to index skill %s for matching", skill["id"])
 
     async def semantic_search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        if not self._collection.available:
+            return await self._semantic_search_fallback(query, top_k)
+
         try:
             results = await asyncio.to_thread(self._collection.query, query_texts=[query], n_results=top_k)
         except Exception:
-            logger.exception("Skill semantic search failed")
-            return []
+            logger.exception("Skill semantic search failed; falling back to SQLite keyword ranking")
+            return await self._semantic_search_fallback(query, top_k)
         ids = results.get("ids", [[]])[0]
         distances = results.get("distances", [[]])[0] if results.get("distances") else [None] * len(ids)
         out = []
@@ -451,6 +460,46 @@ class SkillService:
             score = max(0.0, 1.0 - (distance / 2.0)) if distance is not None else 0.0
             out.append({"skill_id": skill_id, "score": score})
         return out
+
+    async def _semantic_search_fallback(self, query: str, top_k: int) -> list[dict[str, Any]]:
+        """SQLite keyword-ranking fallback for semantic_search, used
+        whenever ChromaDB is unavailable (e.g. Android/Termux) or its
+        query fails. Ranks enabled skills by relevance to `query` across
+        name/description/category/trigger/workflow/website_hint
+        (backend.search.text_rank) instead of returning nothing, so
+        SkillMatcher's semantic pass -- and everything built on top of it
+        (skill learning, GitHub import matching, etc.) -- keeps working
+        without ChromaDB."""
+        skills = await self.list(enabled_only=True)
+        if not skills:
+            return []
+
+        candidates = [
+            {
+                "skill_id": s["id"],
+                "name": s["name"],
+                "description": s["description"],
+                "category": s["category"],
+                "trigger": s["trigger"],
+                "workflow": " ".join(
+                    f"{step.get('action', '')} {step.get('target', '')} {step.get('description', '')}"
+                    for step in (s.get("workflow") or [])
+                    if isinstance(step, dict)
+                ),
+                "website_hint": s.get("website_hint") or "",
+            }
+            for s in skills
+        ]
+        weights = {
+            "name": 1.0,
+            "trigger": 1.0,
+            "description": 0.7,
+            "category": 0.4,
+            "workflow": 0.3,
+            "website_hint": 0.3,
+        }
+        ranked = rank_candidates(query, candidates, weights, top_k=top_k)
+        return [{"skill_id": cand["skill_id"], "score": round(score, 4)} for cand, score in ranked]
 
     async def rebuild_index(self) -> int:
         """Re-embeds every skill -- useful after a manual DB edit or migration."""

@@ -9,14 +9,24 @@ handle isn't available, so this never breaks the dashboard/health page.
 """
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
-try:
+from backend.platform_info import capabilities
+
+logger = logging.getLogger("nexus.monitoring.resources")
+
+# Route through platform_info's probe (import-verified, not just
+# find_spec) rather than a bare `try: import psutil` here -- on Android a
+# partially-installed psutil can be importable but fail on first real use
+# (e.g. Process() construction), which platform_info's probe already
+# accounts for by treating any import-time failure as "unavailable".
+if capabilities.psutil_available:
     import psutil
-except ImportError:  # pragma: no cover - exercised only when psutil is absent
+else:  # pragma: no cover - exercised only when psutil is absent/unusable
     psutil = None  # type: ignore[assignment]
 
 
@@ -39,7 +49,12 @@ class ResourceSnapshot:
 class ResourceMonitor:
     def __init__(self, app_state: Any) -> None:
         self.state = app_state
-        self._process = psutil.Process(os.getpid()) if psutil else None
+        self._process = None
+        if psutil:
+            try:
+                self._process = psutil.Process(os.getpid())
+            except Exception:  # noqa: BLE001 - degrade gracefully, never block startup
+                logger.exception("psutil.Process() failed; resource metrics will be unavailable")
 
     def snapshot(self) -> ResourceSnapshot:
         cpu_percent = None

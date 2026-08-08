@@ -226,6 +226,31 @@ Run tests:
 pytest backend/tests -q
 ```
 
+## Android / Termux
+
+Playwright, psutil, and ChromaDB can't install natively on Termux, but the
+Agent still runs there -- it just falls back automatically:
+
+| Package    | On Android/Termux |
+|------------|--------------------|
+| ChromaDB   | Semantic memory/skill search falls back to SQLite keyword ranking (`backend/search/`) |
+| psutil     | CPU/RAM metrics report as unavailable instead of crashing (`backend/monitoring/resources.py`) |
+| Playwright | Browser automation is unavailable until a device-driven backend is added (`backend/browser/android_backend.py`) |
+
+```bash
+pkg install python git   # inside Termux
+git clone <repo-url> && cd Nexus-Ai-Agent
+python -m venv .venv && source .venv/bin/activate
+./scripts/install.sh     # detects Termux, installs requirements-core.txt
+python -m uvicorn backend.main:app --reload
+```
+
+`GET /api/system/diagnostics` reports each of the three as a capability
+limitation (`"Unavailable — SQLite fallback active"`, etc.), not a failure.
+On Windows/Linux/macOS, `./scripts/install.sh` (or plain
+`pip install -r requirements.txt`) installs the full set as before --
+nothing changes there.
+
 
 
 ## Gemini (বা অন্য LLM) API সেট করবেন কিভাবে

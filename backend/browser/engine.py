@@ -16,18 +16,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Download,
-    Page,
-    Playwright,
-    async_playwright,
-)
+try:
+    from playwright.async_api import (
+        Browser,
+        BrowserContext,
+        Download,
+        Page,
+        Playwright,
+        async_playwright,
+    )
+except ImportError:  # pragma: no cover - exercised only when playwright is absent
+    # Playwright cannot install natively on Android/Termux. Importing this
+    # module must still succeed everywhere -- many modules (skills/runner,
+    # planner/agent_loop, wallet/manager, ...) import BrowserEngine purely
+    # for type references -- so we degrade to None here and raise a clean
+    # BrowserEngineError only when someone actually tries to start a
+    # browser (see BrowserEngine.start()), instead of an ImportError
+    # cascading through half the backend at process startup.
+    Browser = BrowserContext = Download = Page = Playwright = None  # type: ignore[assignment,misc]
+    async_playwright = None  # type: ignore[assignment]
 
+from backend.browser.backend_base import BrowserBackend
 from backend.config.settings import settings, SCREENSHOT_DIR
+from backend.platform_info import capabilities
 
 logger = logging.getLogger("nexus.browser")
+
+#: True only when the playwright package imported successfully *and*
+#: platform_info doesn't otherwise rule this platform out (Android is
+#: always treated as unavailable regardless of import success -- see
+#: PlatformCapabilities.browser_playwright_available).
+PLAYWRIGHT_AVAILABLE = capabilities.browser_playwright_available
 
 
 @dataclass
@@ -60,11 +79,29 @@ def _safe_download_name(suggested: str) -> str:
     return name
 
 
-class BrowserEngine:
+class BrowserEngine(BrowserBackend):
     """
     Wraps a single Playwright browser + persistent context. One instance
     manages one logical "session" (which may contain multiple tabs/pages).
+
+    Implements BrowserBackend (backend.browser.backend_base) so callers can
+    check `.available` before assuming Playwright can actually launch on
+    this platform, rather than finding out via an exception mid-task.
     """
+
+    name = "playwright"
+
+    @property
+    def available(self) -> bool:
+        return PLAYWRIGHT_AVAILABLE
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        if PLAYWRIGHT_AVAILABLE:
+            return None
+        if capabilities.is_android:
+            return "Playwright is not available on Android/Termux."
+        return "The playwright package is not installed."
 
     def __init__(
         self,
@@ -89,6 +126,11 @@ class BrowserEngine:
     # Lifecycle
     # ------------------------------------------------------------------ #
     async def start(self) -> None:
+        if not PLAYWRIGHT_AVAILABLE:
+            raise BrowserEngineError(
+                self.unavailable_reason
+                or "Playwright is unavailable on this platform; browser automation is disabled."
+            )
         self._playwright = await async_playwright().start()
 
         launch_kwargs: dict[str, Any] = {

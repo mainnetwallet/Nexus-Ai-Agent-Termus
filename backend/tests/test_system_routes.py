@@ -80,7 +80,17 @@ async def test_diagnostics_endpoint_returns_checks(client):
     body = r.json()
     assert "passed" in body
     check_names = {c["name"].split(":")[0] for c in body["checks"]}
-    assert check_names == {"browser", "playwright", "ai_api", "database", "plugins", "memory", "environment"}
+    assert check_names == {
+        "browser",
+        "playwright",
+        "chromadb",
+        "psutil",
+        "ai_api",
+        "database",
+        "plugins",
+        "memory",
+        "environment",
+    }
 
 
 @pytest.mark.asyncio

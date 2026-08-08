@@ -25,7 +25,12 @@ from backend.skills.teach import TeachModeManager
 
 class FakeCollection:
     """Stands in for the chromadb collection so tests never touch the
-    network / try to download the embedding model."""
+    network / try to download the embedding model. Also stands in for a
+    backend.search.VectorIndex (see backend/search/base.py) -- `available`
+    is the flag SkillService.semantic_search() checks to decide whether to
+    use this collection or fall back to SQLite keyword ranking."""
+
+    available = True
 
     def __init__(self) -> None:
         self.docs: dict[str, dict] = {}
@@ -309,6 +314,8 @@ async def test_semantic_search_swallows_backend_errors():
     library = SkillService()
 
     class BrokenCollection:
+        available = True
+
         def query(self, *a, **kw):
             raise RuntimeError("embedding model unavailable")
 

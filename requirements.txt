@@ -1,18 +1,20 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-pydantic==2.9.2
-pydantic-settings==2.5.2
-sqlalchemy==2.0.35
-aiosqlite==0.20.0
+# Full desktop dependency set (Windows/Linux/macOS). Everything in
+# requirements-core.txt, plus the three packages that cannot install
+# natively on Android/Termux:
+#   - chromadb   (semantic memory/skill search -- SQLite keyword-ranking
+#                 fallback is used automatically when absent, see
+#                 backend/search/)
+#   - playwright (browser automation -- unavailable on Android until a
+#                 device-driven backend exists, see
+#                 backend/browser/android_backend.py)
+#   - psutil     (CPU/RAM resource metrics -- degrade to None when absent,
+#                 see backend/monitoring/resources.py)
+#
+# On Android/Termux, install requirements-core.txt instead:
+#   pip install -r requirements-core.txt
+# `./scripts/install.sh` detects Termux automatically and picks the right
+# file for you. See the README's "Android / Termux" section for details.
+-r requirements-core.txt
 chromadb==0.5.15
 playwright==1.47.0
-httpx==0.27.2
-python-telegram-bot==21.6
-python-dotenv==1.0.1
-pytest==8.3.3
-pytest-asyncio==0.24.0
-pytesseract==0.3.13
-Pillow==10.4.0
-eth-account==0.13.4
 psutil==6.0.0
-cryptography>=42.0

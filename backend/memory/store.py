@@ -39,13 +39,13 @@ import logging
 import re
 from typing import Any, Optional
 
-import chromadb
-from chromadb.config import Settings as ChromaSettings
 from sqlalchemy import func, select
 
 from backend.config.settings import settings
 from backend.database.models import MemoryCategory, MemoryEntry
 from backend.database.session import get_session
+from backend.search import get_vector_index
+from backend.search.text_rank import rank_candidates
 
 logger = logging.getLogger("nexus.memory")
 
@@ -191,14 +191,17 @@ class MemoryStore:
         # a constructor param so tests/offline deployments without egress to
         # chroma's model bucket can inject a lightweight stand-in instead of
         # triggering a network download on first upsert.
-        self._chroma_client = chromadb.PersistentClient(
-            path=settings.chroma_persist_dir,
-            settings=ChromaSettings(anonymized_telemetry=False),
-        )
-        collection_kwargs: dict[str, Any] = {}
-        if embedding_function is not None:
-            collection_kwargs["embedding_function"] = embedding_function
-        self._collection = self._chroma_client.get_or_create_collection("nexus_workflows", **collection_kwargs)
+        #
+        # `self._collection` is a VectorIndex (backend.search) -- a
+        # ChromaVectorIndex wrapping the real "nexus_workflows" chroma
+        # collection when ChromaDB is available on this platform, or a
+        # NullVectorIndex (Android/Termux, or any environment where chroma
+        # failed to initialize) whose upsert/query/delete are safe no-ops.
+        # `recall_similar_workflows` and `find_duplicate_groups` check
+        # `self._collection.available` where an empty no-op result isn't
+        # good enough on its own and fall back to keyword ranking over the
+        # SQLite MemoryEntry table instead (backend.search.text_rank).
+        self._collection = get_vector_index("nexus_workflows", embedding_function=embedding_function)
         self._expiration_task: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------ #
@@ -358,11 +361,14 @@ class MemoryStore:
 
     async def recall_similar_workflows(self, website: str, goal: str, top_k: int = 3) -> list[dict[str, Any]]:
         query = f"website: {website} goal: {goal}"
+        if not self._collection.available:
+            return await self._recall_similar_workflows_fallback(website, query, top_k)
+
         try:
             results = await asyncio.to_thread(self._collection.query, query_texts=[query], n_results=top_k)
         except Exception:
-            logger.exception("Chroma query failed")
-            return []
+            logger.exception("Chroma query failed; falling back to SQLite keyword ranking")
+            return await self._recall_similar_workflows_fallback(website, query, top_k)
 
         out: list[dict[str, Any]] = []
         ids = results.get("ids", [[]])[0]
@@ -378,6 +384,52 @@ class MemoryStore:
                 await self._bump_access(ids)
             except Exception:
                 logger.exception("Failed to record memory access from recall")
+        return out
+
+    async def _recall_similar_workflows_fallback(self, website: str, query: str, top_k: int) -> list[dict[str, Any]]:
+        """SQLite keyword-ranking fallback for recall_similar_workflows,
+        used whenever ChromaDB is unavailable (e.g. Android/Termux) or its
+        query fails. Ranks existing workflow/failure MemoryEntry rows for
+        this website against `query` (backend.search.text_rank) instead of
+        returning nothing -- semantic similarity degrades to keyword
+        relevance, but Memory recall keeps working end to end."""
+        async with get_session() as session:
+            stmt = select(MemoryEntry).where(
+                MemoryEntry.kind.in_(["workflow", "failure"]), MemoryEntry.archived == False  # noqa: E712
+            )
+            if website:
+                stmt = stmt.where(MemoryEntry.website == website)
+            stmt = stmt.order_by(MemoryEntry.created_at.desc()).limit(200)
+            rows = (await session.execute(stmt)).scalars().all()
+
+        if not rows:
+            return []
+
+        by_id = {r.id: r for r in rows}
+        candidates = [
+            {
+                "id": r.id,
+                "content": r.content,
+                "website": r.website or "",
+                "goal": (r.metadata_json or {}).get("goal", ""),
+            }
+            for r in rows
+        ]
+        ranked = rank_candidates(query, candidates, {"content": 1.0, "goal": 0.6, "website": 0.3}, top_k=top_k)
+
+        out: list[dict[str, Any]] = []
+        matched_ids: list[str] = []
+        for cand, _score in ranked:
+            row = by_id[cand["id"]]
+            meta = row.metadata_json or {}
+            out.append({"summary": row.content, "confidence": row.confidence, "status": meta.get("status")})
+            matched_ids.append(row.id)
+
+        if matched_ids:
+            try:
+                await self._bump_access(matched_ids)
+            except Exception:
+                logger.exception("Failed to record memory access from fallback recall")
         return out
 
     async def save_preference(self, key: str, value: str) -> None:
@@ -569,8 +621,10 @@ class MemoryStore:
                 union(ids[0], other)
 
         # Signal 2: semantic near-duplicates via chroma (best-effort; a
-        # failure here still leaves the exact-hash groups intact).
-        if rows:
+        # failure here still leaves the exact-hash groups intact). Skipped
+        # entirely when chroma is unavailable -- exact-hash groups (above)
+        # are still fully functional without it, per the fallback contract.
+        if rows and self._collection.available:
             try:
                 for r in rows:
                     result = await asyncio.to_thread(

@@ -19,6 +19,7 @@ from typing import Any
 
 from backend.config.settings import LLMProvider, settings
 from backend.planner.model_manager import model_manager
+from backend.platform_info import capabilities
 
 
 @dataclass
@@ -72,6 +73,8 @@ class DiagnosticsService:
         report = DiagnosticReport()
         report.checks.append(self._check_browser())
         report.checks.append(self._check_playwright())
+        report.checks.append(self._check_chromadb())
+        report.checks.append(self._check_psutil())
         report.checks.extend(await self._check_ai_apis())
         report.checks.append(await self._check_database())
         report.checks.append(self._check_plugins())
@@ -84,11 +87,22 @@ class DiagnosticsService:
         queue = getattr(self.state, "queue", None)
         if queue is None:
             return DiagnosticCheck("browser", False, "task queue not initialized")
+        if not capabilities.browser_playwright_available:
+            return DiagnosticCheck("browser", True, "task queue initialized; browser automation unavailable on this platform")
         return DiagnosticCheck(
             "browser", True, f"channel={settings.browser_channel.value} headless={settings.browser_headless}"
         )
 
     def _check_playwright(self) -> DiagnosticCheck:
+        if capabilities.browser_playwright_available:
+            return DiagnosticCheck("playwright", True, "playwright package importable")
+        if capabilities.is_android:
+            # Capability limitation, not a fatal application error --
+            # Playwright cannot install natively on Android/Termux, and
+            # browser-dependent features degrade to "unavailable" (see
+            # backend.browser.android_backend.AndroidBrowserBackend)
+            # instead of the Agent failing to run at all.
+            return DiagnosticCheck("playwright", True, "Unavailable on this platform (Android/Termux)")
         if importlib.util.find_spec("playwright") is None:
             return DiagnosticCheck("playwright", False, "playwright package not installed")
         try:
@@ -97,6 +111,20 @@ class DiagnosticsService:
             return DiagnosticCheck("playwright", True, "playwright package importable")
         except Exception as exc:  # noqa: BLE001
             return DiagnosticCheck("playwright", False, f"import failed: {exc}")
+
+    def _check_chromadb(self) -> DiagnosticCheck:
+        if capabilities.chromadb_available:
+            return DiagnosticCheck("chromadb", True, "chromadb package importable")
+        if capabilities.is_android:
+            return DiagnosticCheck("chromadb", True, "Unavailable — SQLite fallback active")
+        return DiagnosticCheck("chromadb", False, "chromadb package not installed")
+
+    def _check_psutil(self) -> DiagnosticCheck:
+        if capabilities.psutil_available:
+            return DiagnosticCheck("psutil", True, "psutil package importable")
+        if capabilities.is_android:
+            return DiagnosticCheck("psutil", True, "Unavailable — resource metrics degraded")
+        return DiagnosticCheck("psutil", False, "psutil package not installed")
 
     # Every provider the AI Model Manager supports. Kept here (rather than
     # imported from backend.planner.model_manager) to avoid pulling in the
@@ -195,7 +223,11 @@ class DiagnosticsService:
         memory = getattr(self.state, "memory", None)
         if memory is None:
             return DiagnosticCheck("memory", False, "MemoryStore not initialized")
-        return DiagnosticCheck("memory", True, f"chroma_persist_dir={settings.chroma_persist_dir}")
+        if capabilities.chromadb_available:
+            detail = f"chroma_persist_dir={settings.chroma_persist_dir}"
+        else:
+            detail = "SQLite fallback active (chromadb unavailable) — semantic recall degraded to keyword ranking"
+        return DiagnosticCheck("memory", True, detail)
 
     def _check_environment(self) -> DiagnosticCheck:
         missing = []

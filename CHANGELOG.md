@@ -4,6 +4,59 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Termux/Android compatibility
+
+Playwright, psutil, and ChromaDB cannot install natively on Termux, so the Agent
+now detects the platform and degrades each one independently instead of crashing
+on import or losing Memory/Skills entirely.
+
+### Added
+- `backend/platform_info.py` — Android/Termux detection (via `$PREFIX`,
+  `$TERMUX_VERSION`, `$ANDROID_ROOT`/`$ANDROID_DATA`, `/data/data/com.termux`, and
+  `platform.uname()`, since `platform.system()` alone reports plain "Linux" under
+  Termux) plus import-verified availability flags for psutil/chromadb/playwright,
+  exposed as a single `capabilities` singleton every other module reads from.
+- `backend/search/` — `VectorIndex` abstraction (`ChromaVectorIndex` /
+  `NullVectorIndex`) plus `get_vector_index()`, so `MemoryStore` and `SkillService`
+  no longer construct a chromadb client directly. `backend/search/text_rank.py` is
+  a shared keyword-relevance ranker (normalize → exact phrase > exact word > partial
+  match) used as the SQLite fallback for `recall_similar_workflows` and
+  `semantic_search` when ChromaDB is unavailable — ranks the *existing*
+  MemoryEntry/Skill rows, no separate index table.
+- `backend/browser/backend_base.py` + `backend/browser/android_backend.py` — a
+  `BrowserBackend` capability interface (`available`, `unavailable_reason`) and a
+  placeholder `AndroidBrowserBackend`, ready for a future device-driven backend.
+- `requirements-core.txt` + `scripts/install.sh` — Termux installs the core set
+  (skips chromadb/playwright/psutil); `install.sh` auto-detects Termux and picks
+  the right file. Windows/Linux/macOS install `requirements.txt` exactly as before.
+- Added tests: `backend/tests/test_platform_compat.py` (platform detection,
+  NullVectorIndex safety, memory save/recall without chroma, skill CRUD/semantic
+  search/GitHub import without chroma, psutil-unavailable resource monitoring,
+  diagnostics degrading to capability-limitation messages on Android vs. genuine
+  failures on desktop).
+
+### Fixed
+- `backend/browser/engine.py` — the Playwright import is now guarded; importing
+  this module (and everything that imports `BrowserEngine` for type references —
+  `planner/agent_loop.py`, `wallet/manager.py`, `skills/runner.py`, etc.) no longer
+  crashes when Playwright isn't installed. `BrowserEngine.start()` raises a clean
+  `BrowserEngineError` instead.
+- `backend/monitoring/diagnostics.py` — added `chromadb`/`psutil` checks; on
+  Android, missing playwright/chromadb/psutil report as passing capability
+  limitations ("Unavailable — SQLite fallback active", etc.); on desktop, a
+  missing one still reports as a genuine failure, unchanged from before.
+- `backend/monitoring/resources.py` — added the module logger that
+  `psutil.Process()` failure handling referenced (a partially-installed psutil can
+  import but fail at first use — observed on some Termux setups).
+
+### Unchanged (verified)
+- Windows/Linux/macOS with the full dependency set: ChromaDB-backed semantic
+  memory/skill search, Playwright browser automation, and psutil resource metrics
+  all behave exactly as before (`backend.search.get_vector_index` returns a real
+  `ChromaVectorIndex`, `BrowserEngine.available` is `True`, etc.) — verified by
+  running the full test suite with and without chromadb/playwright/psutil
+  installed, and with a simulated Termux environment.
+
 ## [Unreleased] - Security review: auth, downloads, Discord confirm gates
 
 ### Fixed
