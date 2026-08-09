@@ -383,7 +383,16 @@ export interface BrowserStatus {
   task_id?: string
   url?: string
   title?: string
-  viewers?: number
+  connected_clients?: number
+  frame_count?: number
+  last_frame_at?: number | null
+  stream_interval_ms?: number
+  jpeg_quality?: number
+  last_error?: string | null
+  /** "screencast" = real-time CDP push (Page.startScreencast); "poll" = fixed-interval
+   *  page.screenshot() fallback used only when a screencast session couldn't be started;
+   *  "idle" = no active browser to stream. */
+  capture_mode?: "screencast" | "poll" | "idle"
 }
 
 export interface LogsResponse {

@@ -81,6 +81,8 @@ export function Browser() {
   }, [])
 
   const active = status.data?.active ?? false
+  const captureMode = status.data?.capture_mode
+  const isStreaming = captureMode === "screencast"
 
   return (
     <div className="flex flex-col gap-6">
@@ -97,9 +99,16 @@ export function Browser() {
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="flex items-center gap-2">
               <MonitorPlay className="size-4 text-[var(--color-signal-cyan)]" />
-              Live screenshot
+              Live Stream
             </CardTitle>
-            <Badge variant={active ? "green" : "neutral"}>{active ? "live" : "idle"}</Badge>
+            <div className="flex items-center gap-2">
+              {active && (
+                <Badge variant={isStreaming ? "green" : "neutral"}>
+                  {isStreaming ? "streaming" : captureMode === "poll" ? "polling" : "connecting…"}
+                </Badge>
+              )}
+              <Badge variant={active ? "green" : "neutral"}>{active ? "live" : "idle"}</Badge>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="relative w-full overflow-hidden rounded-md border border-[var(--color-border)] bg-black" style={{ minHeight: "420px", maxHeight: "75vh" }}>
@@ -118,7 +127,10 @@ export function Browser() {
             </div>
             {staleAt && (
               <p className="mt-2 font-mono text-xs text-[var(--color-text-faint)]">
-                last frame {new Date(staleAt).toLocaleTimeString()}
+                {isStreaming
+                  ? `streaming live · last frame ${new Date(staleAt).toLocaleTimeString()}`
+                  : `last frame ${new Date(staleAt).toLocaleTimeString()}`}
+                {status.data?.frame_count ? ` · ${status.data.frame_count} frames` : ""}
               </p>
             )}
           </CardContent>
@@ -134,7 +146,7 @@ export function Browser() {
 
             <InfoRow icon={Globe} label="URL" value={status.data?.url ?? "—"} mono />
             <InfoRow icon={MonitorPlay} label="Title" value={status.data?.title ?? "—"} />
-            <InfoRow icon={Users} label="Viewers" value={String(status.data?.viewers ?? 0)} />
+            <InfoRow icon={Users} label="Viewers" value={String(status.data?.connected_clients ?? 0)} />
             {status.data?.task_id && <InfoRow icon={Globe} label="Task" value={status.data.task_id} mono />}
           </CardContent>
         </Card>
