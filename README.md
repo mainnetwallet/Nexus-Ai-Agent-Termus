@@ -13,7 +13,7 @@ engine" requirement: it never hardcodes selectors or logic for any particular si
 ## আগে থেকে Repo Clone করা থাকলে (Update)
 
 ```bash
-cd Nexus-Ai-Agent
+cd Nexus-Ai-Agent-Termus
 git pull origin main
 .\scripts\dev.ps1
 ```
@@ -26,13 +26,13 @@ Pull-এর পর server restart করুন। প্রয়োজনে `p
 
 **Windows:**
 ```powershell
-cd Nexus-Ai-Agent
+cd Nexus-Ai-Agent-Termus
 .\scripts\dev.ps1
 ```
 
 **Linux / Mac:**
 ```bash
-cd Nexus-Ai-Agent
+cd Nexus-Ai-Agent-Termus
 chmod +x scripts/dev.sh
 ./scripts/dev.sh
 ```
@@ -40,7 +40,7 @@ chmod +x scripts/dev.sh
 
 **`logs/backend.log`-এ `No module named uvicorn` error থাকলে**, dependencies install করা নেই — এটা চালান:
 ```powershell
-cd Nexus-Ai-Agent
+cd Nexus-Ai-Agent-Termus
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -51,8 +51,8 @@ pip install -r requirements.txt
 
 **১) Clone**
 ```bash
-git clone https://github.com/mainnetwallet/Nexus-Ai-Agent.git
-cd Nexus-Ai-Agent
+git clone https://github.com/mainnetwallet/Nexus-Ai-Agent-Termus.git
+cd Nexus-Ai-Agent-Termus
 ```
 
 **২) `.env` বানান**
@@ -239,7 +239,7 @@ Agent still runs there -- it just falls back automatically:
 
 ```bash
 pkg install python git   # inside Termux
-git clone <repo-url> && cd Nexus-Ai-Agent
+git clone https://github.com/mainnetwallet/Nexus-Ai-Agent-Termus.git && cd Nexus-Ai-Agent-Termus
 python -m venv .venv && source .venv/bin/activate
 ./scripts/install.sh     # detects Termux, installs requirements-core.txt
 python -m uvicorn backend.main:app --reload
