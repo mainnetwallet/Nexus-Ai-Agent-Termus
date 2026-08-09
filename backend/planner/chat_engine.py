@@ -555,27 +555,41 @@ class ChatEngine:
             return result.scalars().first()
 
     async def _resume_task_with_user_input(self, session: ChatSession, task: Task, text: str) -> tuple[str, dict]:
+        # If the task's browser engine is still alive and its run() coroutine is
+        # literally blocked waiting on this task's pause_event (see
+        # TaskQueueService.on_need_human_input / has_live_pause), resuming should
+        # continue on the *same page* -- not reset status/retry_count and requeue
+        # as a brand-new attempt (that would close the browser and start over).
+        same_page = bool(self.queue and self.queue.has_live_pause(task.id))
+
         async with get_session() as db:
             db_task = await db.get(Task, task.id)
             if db_task:
                 existing_notes = db_task.notes or ""
                 db_task.notes = f"{existing_notes}\n[USER FIX ADVICE]: {text}".strip()
-                db_task.status = TaskStatus.QUEUED
-                db_task.retry_count = 0
+                if not same_page:
+                    db_task.status = TaskStatus.QUEUED
+                    db_task.retry_count = 0
                 await db.flush()
 
         if self.queue:
-            if task.status == TaskStatus.FAILED:
+            if not same_page and task.status == TaskStatus.FAILED:
                 await self.queue.retry(task.id)
             else:
+                # same_page=True: this just flips the live pause_event, unblocking
+                # the still-running task right where it paused, with the notes
+                # above now visible to its next planner step.
                 await self.queue.resume_task(task.id)
 
         session.last_task_id = task.id
-        reply = (
-            f"Received your fix advice: '{text}'. "
-            f"Updated task instructions and retrying task on {task.website or 'system'} (task_id={task.id[:8]})."
-        )
-        return reply, {"task_id": task.id, "resumed": True, "input": text}
+        if same_page:
+            reply = f"Got it -- continuing on {task.website or 'the page'} right where the agent paused, using: '{text}'."
+        else:
+            reply = (
+                f"Received your fix advice: '{text}'. "
+                f"Updated task instructions and retrying task on {task.website or 'system'} (task_id={task.id[:8]})."
+            )
+        return reply, {"task_id": task.id, "resumed": True, "input": text, "same_page": same_page}
 
     @staticmethod
     def _history_prompt(context: str, text: str) -> str:

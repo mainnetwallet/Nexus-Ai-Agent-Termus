@@ -237,6 +237,14 @@ class TaskQueueService:
         event.clear()
         return True
 
+    def has_live_pause(self, task_id: str) -> bool:
+        """True if this task is paused *in place* -- its browser engine is
+        still open and the run() coroutine is blocked waiting on the same
+        pause_event, so resume_task() will continue on the same page rather
+        than starting a fresh attempt. False for an orphaned PAUSED row left
+        by a worker/process that's no longer around."""
+        return task_id in self._task_pause_events
+
     async def resume_task(self, task_id: str) -> bool:
         """
         Resume a single previously-paused task. If it's still actively
@@ -441,11 +449,6 @@ class TaskQueueService:
                         f"{step_result.note}. Reply in chat with fix advice to retry "
                         f"(e.g. 'click Join button instead' or 'scroll down')."
                     )
-                # If this is a NEED_HUMAN_INPUT pause, send a clear prompt to the chat so the user sees it.
-                if step_result.note and step_result.note.startswith('NEED_HUMAN_INPUT'):
-                    await self.notify_fn(
-                        f"🛑 Task paused: {step_result.note}. Please provide the required information in chat to resume."
-                    )
             if self.activity_fn:
                 await self.activity_fn(
                     {
@@ -499,6 +502,39 @@ class TaskQueueService:
             if self.notify_fn:
                 await self.notify_fn(f"Task on {task.website} resumed.")
 
+        async def on_need_human_input(reasoning: str) -> str:
+            """Called by AgentLoop when the planner hits NEED_HUMAN_INPUT or a
+            stall. Blocks right here -- same coroutine, same engine, same open
+            page -- until the user answers in chat and something calls
+            resume_task() on this task_id (see TaskQueueService.resume_task:
+            since pause_event is still live for this task, that just flips it
+            and returns, it does NOT spin up a fresh browser). Returns the
+            freshest task.notes so the next planner step sees the user's reply
+            (chat_engine.py appends it there as "[USER FIX ADVICE]: ...").
+            """
+            pause_event.clear()
+            async with get_session() as session:
+                db_task = await session.get(Task, task.id)
+                db_task.status = TaskStatus.PAUSED
+            if self.notify_fn:
+                await self.notify_fn(
+                    f"🛑 Task paused: {reasoning} Reply in chat and the agent will pick up right here."
+                )
+            await pause_event.wait()
+            if task.id in self._cancelled_ids:
+                # Cancelled while waiting -- don't touch status, let the loop's
+                # own should_cancel() check end things cleanly on its next tick.
+                async with get_session() as session:
+                    db_task = await session.get(Task, task.id)
+                    return db_task.notes or ""
+            async with get_session() as session:
+                db_task = await session.get(Task, task.id)
+                db_task.status = TaskStatus.RUNNING
+                fresh_notes = db_task.notes or ""
+            if self.notify_fn:
+                await self.notify_fn(f"Continuing task on {task.website} where it left off.")
+            return fresh_notes
+
         try:
             async with get_session() as session:
                 db_task = await session.get(Task, task.id)
@@ -548,6 +584,7 @@ class TaskQueueService:
                     task_id=task.id,
                     plugin_registry=self.plugin_registry,
                     mcp=self.mcp,
+                    on_need_human_input=on_need_human_input,
                 )
                 outcome = await loop.run(task.website, task.goal, effective_wallet_label, task.notes or "")
 

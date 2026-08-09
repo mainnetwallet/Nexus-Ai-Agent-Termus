@@ -84,6 +84,7 @@ class AgentLoop:
         task_id: Optional[str] = None,
         plugin_registry: Optional[Any] = None,
         mcp: Optional[Any] = None,
+        on_need_human_input: Optional[Any] = None,
     ) -> None:
         self.engine = engine
         self.memory = memory
@@ -97,6 +98,13 @@ class AgentLoop:
         self.task_id = task_id  # optional, used only to tag plugin hook dispatch and wallet-popup veto lookups
         self.plugin_registry = plugin_registry  # optional PluginRegistry; hooks are no-ops if None
         self.mcp = mcp  # optional MCPManager (backend/mcp/manager.py); StepAction.MCP_TOOL is a no-op failure if None
+        # optional async callable(reasoning: str) -> str; called when the planner hits
+        # NEED_HUMAN_INPUT or a stall. Blocks *in place* -- same engine, same page, same
+        # loop -- until the caller resumes it, then returns the freshest task notes (so
+        # anything the user just said in chat is visible to the next decide() call).
+        # If None, the loop falls back to ending the run with status="paused" (old
+        # behavior), and whoever restarts the task starts a brand-new browser session.
+        self.on_need_human_input = on_need_human_input
 
         # Dedicated reasoning module (see backend/planner/decision_engine.py):
         # owns perception-fallback, LLM decision, verification, and recovery
@@ -152,8 +160,6 @@ class AgentLoop:
                 break
 
             if action == StepAction.NEED_HUMAN_INPUT.value:
-                outcome.status = "paused"
-                outcome.summary = reasoning or "Agent needs user input/access to continue."
                 shot = await self.engine.screenshot(name_hint=f"need_input_step{step_index}")
                 step_result = StepResult(
                     index=step_index,
@@ -168,6 +174,12 @@ class AgentLoop:
                 outcome.steps.append(step_result)
                 if self.on_step:
                     await self.on_step(step_result)
+                resumed, notes = await self._pause_for_human(reasoning, notes)
+                if resumed:
+                    stall_count = 0
+                    continue
+                outcome.status = "paused"
+                outcome.summary = reasoning or "Agent needs user input/access to continue."
                 break
 
             if action == StepAction.BLOCKED.value:
@@ -231,8 +243,16 @@ class AgentLoop:
             recovery_context = self.decision_engine.recovery_hint(action, target, success, stall_count)
 
             if stall_count >= 5:
+                stall_reason = (
+                    f"Agent stalled on URL {url_after[:50]}: page state did not change after "
+                    f"repeated actions ({action} '{target}')."
+                )
+                resumed, notes = await self._pause_for_human(stall_reason, notes)
+                if resumed:
+                    stall_count = 0
+                    continue
                 outcome.status = "paused"
-                outcome.summary = f"Agent stalled on URL {url_after[:50]}: page state did not change after repeated actions ({action} '{target}'). Reply in chat with advice to fix and retry."
+                outcome.summary = f"{stall_reason} Reply in chat with advice to fix and retry."
                 break
         else:
             outcome.status = "failed"
@@ -243,6 +263,17 @@ class AgentLoop:
         if self.plugin_registry is not None and self.task_id is not None:
             await self.plugin_registry.dispatch_task_finish(self.task_id, outcome.status, outcome.summary)
         return outcome
+
+    async def _pause_for_human(self, reasoning: str, notes: str) -> tuple[bool, str]:
+        """Blocks in place (same engine/page/loop) waiting for the caller's
+        on_need_human_input hook to unblock it -- e.g. because the user
+        replied in chat. Returns (True, refreshed_notes) if it resumed this
+        way, or (False, notes) if no hook is wired up, in which case the
+        caller should fall back to ending the run entirely."""
+        if self.on_need_human_input is None:
+            return False, notes
+        new_notes = await self.on_need_human_input(reasoning)
+        return True, (new_notes if new_notes is not None else notes)
 
     async def _execute_action(self, action: str, target: str, value: str) -> tuple[bool, str]:
         try:
