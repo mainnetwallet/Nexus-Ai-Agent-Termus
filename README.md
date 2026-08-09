@@ -444,7 +444,6 @@ npm run build    # production build -> frontend/dist
 > ⚠️ Dashboard-এ **"Invalid or missing token"** error দেখালে — `frontend/.env`-এর
 > `VITE_API_TOKEN` আর root `.env`-এর `API_AUTH_TOKEN` মিলছে না। দুই জায়গায়
 > **একই** token বসিয়ে দুটো process-ই restart করুন।
-```
 
 Pages:
 - **Home** — live counts (running/queued/succeeded/failed), recent tasks, recent
