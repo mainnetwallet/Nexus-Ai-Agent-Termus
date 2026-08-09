@@ -38,6 +38,16 @@ chmod +x scripts/dev.sh
 ```
 শুধু frontend log এই window-এ দেখাবে। Backend log hide করা থাকে, `logs/backend.log`-এ যায়। `Ctrl+C`-তে দুটোই বন্ধ হবে। (আগে থেকে `.venv` ও `npm install` করা থাকতে হবে — নিচের step ৩ দেখুন।)
 
+**Android (Termux):** `.ps1`/`.sh` script গুলো Windows/desktop-Linux-এর জন্য — Termux-এ সরাসরি চলবে না। এর বদলে backend-কে background-এ পাঠিয়ে frontend foreground-এ চালান:
+```bash
+cd Nexus-Ai-Agent-Termus
+source .venv/bin/activate
+nohup python -m uvicorn backend.main:app --reload > backend.log 2>&1 &
+cd frontend
+npm run dev
+```
+Backend log দেখতে: `tail -f backend.log` (আলাদা session/pane-এ)। Backend বন্ধ করতে: `pkill -f "uvicorn backend.main"`।
+
 **`logs/backend.log`-এ `No module named uvicorn` error থাকলে**, dependencies install করা নেই — এটা চালান:
 ```powershell
 cd Nexus-Ai-Agent-Termus
