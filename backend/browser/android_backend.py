@@ -72,8 +72,11 @@ class _Keyboard:
 
 class _PageShim:
     """Minimal `page`-shaped shim exposing just what call sites outside
-    this module read directly (`engine.page.url`, `engine.page.keyboard`).
-    Everything else goes through AndroidBrowserBackend's own methods."""
+    this module read directly: `engine.page.url` / `.keyboard`
+    (identity/detector.py, mcp/connectors/discord_connector.py) and
+    `.screenshot()` / `.title()` (backend/browser/live_session.py, which
+    calls Playwright's `page.screenshot(type=, quality=, full_page=)` and
+    `await page.title()` to stream the live browser view)."""
 
     def __init__(self, target: CDPTarget) -> None:
         self._target = target
@@ -82,6 +85,37 @@ class _PageShim:
     @property
     def url(self) -> str:
         return self._target.url
+
+    async def title(self) -> str:
+        return (await self._target.evaluate("document.title")) or ""
+
+    async def screenshot(
+        self,
+        type: str = "png",  # noqa: A002 - matches Playwright's kwarg name so call sites need no changes
+        quality: int | None = None,
+        full_page: bool = False,
+        **_ignored: Any,
+    ) -> bytes:
+        params: dict[str, Any] = {"format": "jpeg" if type == "jpeg" else "png"}
+        if type == "jpeg" and quality is not None:
+            params["quality"] = quality
+        if full_page:
+            try:
+                metrics = await self._target.send("Page.getLayoutMetrics")
+                content_size = metrics.get("cssContentSize") or metrics.get("contentSize")
+                if content_size:
+                    params["clip"] = {
+                        "x": 0,
+                        "y": 0,
+                        "width": content_size["width"],
+                        "height": content_size["height"],
+                        "scale": 1,
+                    }
+                    params["captureBeyondViewport"] = True
+            except CDPError:
+                pass  # fall back to viewport-only screenshot
+        result = await self._target.send("Page.captureScreenshot", params)
+        return base64.b64decode(result["data"])
 
 
 # JS shared conceptually with engine.py's extraction logic (kept in sync by

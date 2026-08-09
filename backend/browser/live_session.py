@@ -26,7 +26,8 @@ from typing import Any, Callable, Optional
 
 from fastapi import WebSocket
 
-from backend.browser.engine import BrowserEngine, BrowserEngineError
+from backend.browser.engine import BrowserEngineError
+from backend.browser.factory import AnyBrowserBackend
 from backend.config.settings import settings
 
 logger = logging.getLogger("nexus.live_session")
@@ -41,7 +42,7 @@ class LiveSessionManager:
 
     def __init__(
         self,
-        engine_provider: Callable[[], Optional[BrowserEngine]],
+        engine_provider: Callable[[], Optional[AnyBrowserBackend]],
         task_id_provider: Callable[[], Optional[str]],
         interval_ms: Optional[int] = None,
         jpeg_quality: Optional[int] = None,
@@ -173,7 +174,7 @@ class LiveSessionManager:
                 logger.exception("Live session poll loop error")
                 await asyncio.sleep(self._interval_ms / 1000)
 
-    async def _capture(self, engine: BrowserEngine) -> None:
+    async def _capture(self, engine: AnyBrowserBackend) -> None:
         try:
             page = engine.page
         except BrowserEngineError:

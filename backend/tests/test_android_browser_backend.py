@@ -184,3 +184,51 @@ def test_factory_selects_android_backend_on_android(monkeypatch):
 
     monkeypatch.setattr(factory_mod, "capabilities", _fake_capabilities(is_android=True))
     assert isinstance(factory_mod.make_browser_backend(), AndroidBrowserBackend)
+
+
+@pytest.mark.asyncio
+async def test_page_shim_screenshot_and_title_used_by_live_session():
+    """live_session.py calls Playwright's page.screenshot(type=, quality=,
+    full_page=) and await page.title() -- this is the regression that
+    caused 'No frame captured yet' to persist forever on Android, since
+    the old shim had neither method."""
+    import base64
+    from backend.browser.android_backend import _PageShim
+
+    calls = []
+
+    async def fake_send(method, params=None, timeout=30.0):
+        calls.append((method, params))
+        if method == "Page.getLayoutMetrics":
+            return {"cssContentSize": {"width": 800, "height": 2000}}
+        if method == "Page.captureScreenshot":
+            return {"data": base64.b64encode(b"fake-jpeg-bytes").decode()}
+        raise AssertionError(f"unexpected send: {method}")
+
+    async def fake_evaluate(expr, **kwargs):
+        assert expr == "document.title"
+        return "Example Domain"
+
+    class FakeTarget:
+        url = "https://example.com/"
+
+        async def send(self, method, params=None, timeout=30.0):
+            return await fake_send(method, params, timeout)
+
+        async def evaluate(self, expr, **kwargs):
+            return await fake_evaluate(expr, **kwargs)
+
+    page = _PageShim(FakeTarget())
+    assert page.url == "https://example.com/"
+    assert await page.title() == "Example Domain"
+
+    frame_bytes = await page.screenshot(type="jpeg", quality=60, full_page=True)
+    assert frame_bytes == b"fake-jpeg-bytes"
+
+    methods_called = [m for m, _ in calls]
+    assert "Page.getLayoutMetrics" in methods_called
+    assert "Page.captureScreenshot" in methods_called
+    capture_params = next(p for m, p in calls if m == "Page.captureScreenshot")
+    assert capture_params["format"] == "jpeg"
+    assert capture_params["quality"] == 60
+    assert capture_params["clip"]["width"] == 800
