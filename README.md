@@ -425,7 +425,7 @@ docker compose up --build
 ```
 backend/
   api/         REST + WebSocket routes, auth
-  browser/     Playwright engine (generic, no site logic) + live session streaming
+  browser/     Playwright engine (generic, no site logic) + event-driven live session streaming (CDP screencast, polling fallback)
   planner/     LLM client (single-provider impl) + AI Model Manager (single entry point for every AI request: multi-provider switching/smart routing/cross-provider fallback/temporary overrides), agent loop, task queue, autonomous agent runtime
   memory/      SQLite + ChromaDB store
   vision/      OCR + vision-LLM perception fallback
@@ -477,8 +477,12 @@ Pages:
   status, current task/action, AI reasoning summary, browser state, active
   wallet, and runtime statistics (`GET /api/agent/status`, `POST /api/agent/
   start` / `/stop` / `/pause` / `/resume`).
-- **Browser** — read-only live view: polls `GET /api/browser/screenshot` and
-  shows `GET /api/browser/status` (URL, title, viewer count). No control surface.
+- **Browser** — read-only live view: streams frames over `WS /api/browser/ws/live`
+  (event-driven CDP screencast when the active engine supports it, so the view
+  updates the moment the page repaints instead of a fixed-interval screenshot
+  slideshow), with `GET /api/browser/screenshot` HTTP polling only as a
+  fallback if the socket drops. Also shows `GET /api/browser/status` (URL,
+  title, viewer count). No control surface.
 - **Tasks** — lists `GET /api/tasks`, and a "New task" dialog that posts to
   `POST /api/tasks` (website, goal, optional wallet label from `GET /api/wallets`,
   notes).

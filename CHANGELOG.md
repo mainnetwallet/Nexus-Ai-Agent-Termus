@@ -4,6 +4,54 @@ All notable changes to Nexus-Agent are documented here. Phase 2 is being deliver
 incrementally, one feature at a time; each entry below corresponds to one delivered
 increment with passing tests.
 
+## [Unreleased] - Live browser view: event-driven CDP screencast
+
+The live browser view previously worked by screenshotting the active page on a
+fixed 300ms timer (`live_session_interval_ms`) and broadcasting each JPEG over
+the WebSocket -- functional, but visibly choppy, since a new frame only ever
+showed up on the timer tick regardless of how the page actually repainted.
+Still fully read-only: nothing here clicks, types, or otherwise drives the page.
+
+### Changed
+- `backend/browser/cdp_client.py` — `CDPTarget` gained `on_event`/`off_event`,
+  a persistent (repeating) event subscription alongside the existing one-shot
+  `wait_for_event`, needed because `Page.screencastFrame` fires continuously
+  for as long as a stream is active.
+- `backend/browser/engine.py` — `BrowserEngine.start_screencast`/
+  `stop_screencast`: opens a raw CDP session via
+  `context.new_cdp_session(page)` and calls `Page.startScreencast`, so Chrome
+  pushes a frame the moment it repaints instead of on a timer.
+  `Page.screencastFrameAck` is sent automatically for every frame (Chrome
+  pauses the stream otherwise). Falls back to returning `False` — no partial
+  state left running — if a CDP session can't be opened or the start call
+  fails.
+- `backend/browser/android_backend.py` — matching `start_screencast`/
+  `stop_screencast` on `AndroidBrowserBackend`, implemented directly against
+  the tab's `CDPTarget` (no new abstraction needed, since this backend
+  already speaks raw CDP).
+- `backend/browser/live_session.py` — `LiveSessionManager` now tries the
+  CDP screencast first for whichever engine is active, and only falls back
+  to the old fixed-interval `page.screenshot()` polling when the engine
+  doesn't support it or the CDP call fails, so the fallback stays fully
+  backward compatible. Detects when the active engine changes (new task
+  started) and re-attaches the screencast accordingly. Frame metadata
+  (title/url) is throttled rather than refetched on every pushed frame.
+- `backend/config/settings.py` — added `live_session_max_width`,
+  `live_session_max_height`, `live_session_every_nth_frame`; updated field
+  descriptions since the stream is no longer purely poll-driven.
+- `README.md` — corrected the Browser dashboard page description, which
+  previously described the live view as HTTP-polling
+  `GET /api/browser/screenshot`; it now describes the WS-driven screencast
+  as primary with HTTP polling only as a fallback if the socket drops.
+
+### Added
+- `backend/tests/test_live_screencast.py` (11 tests) — `CDPTarget.on_event`
+  firing repeatedly and acking each frame (via a fake CDP WebSocket server,
+  same pattern as `test_android_browser_backend.py`), `BrowserEngine`/
+  `AndroidBrowserBackend` screencast start/stream/stop plus fallback on
+  failure, and `LiveSessionManager` preferring screencast and correctly
+  switching/stopping sessions when the active engine changes.
+
 ## [Unreleased] - Termux/Android compatibility
 
 Playwright, psutil, and ChromaDB cannot install natively on Termux, so the Agent

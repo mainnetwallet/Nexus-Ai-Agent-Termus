@@ -289,10 +289,13 @@ class Settings(BaseSettings):
     ocr_lang: str = Field(default="eng")
     ocr_max_chars: int = Field(default=4000)
 
-    # --- Live browser session (real-time screenshot streaming) ---
-    live_session_enabled: bool = Field(default=True, description="Enable the live browser session stream (screenshot polling + WebSocket broadcast)")
-    live_session_interval_ms: int = Field(default=300, description="How often the live session captures a screenshot of the active task's page")
+    # --- Live browser session (real-time video streaming) ---
+    live_session_enabled: bool = Field(default=True, description="Enable the live browser session stream (CDP screencast + WebSocket broadcast, read-only view of whichever page the agent is driving)")
+    live_session_interval_ms: int = Field(default=300, description="Fallback screenshot-polling interval used only when a CDP screencast session can't be started for the active engine")
     live_session_jpeg_quality: int = Field(default=60, description="JPEG quality (1-100) used for live session frames -- lower is faster/smaller")
+    live_session_max_width: int = Field(default=1280, description="Max frame width (px) requested from Page.startScreencast; Chrome downsamples to this before encoding")
+    live_session_max_height: int = Field(default=900, description="Max frame height (px) requested from Page.startScreencast; Chrome downsamples to this before encoding")
+    live_session_every_nth_frame: int = Field(default=1, description="Only push every Nth painted frame from Page.startScreencast; raise this to trade smoothness for bandwidth")
 
     # --- Plugin framework ---
     plugins_enabled: bool = Field(default=True, description="Discover and auto-enable plugins under plugins_dir at startup")

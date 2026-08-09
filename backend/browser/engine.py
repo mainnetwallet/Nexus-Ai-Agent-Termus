@@ -9,12 +9,13 @@ the user supplies at runtime.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     from playwright.async_api import (
@@ -121,6 +122,10 @@ class BrowserEngine(BrowserBackend):
         self._pages: dict[str, Page] = {}
         self._active_page_id: Optional[str] = None
         self._downloads: list[Path] = []
+        # Raw CDP session backing an active Page.startScreencast stream
+        # (see start_screencast/stop_screencast below), or None when the
+        # live session view is falling back to page.screenshot() polling.
+        self._screencast_session: Optional[Any] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -165,6 +170,8 @@ class BrowserEngine(BrowserBackend):
         return self._user_data_dir
 
     async def stop(self) -> None:
+        if self._screencast_session is not None:
+            await self.stop_screencast()
         if self._context:
             await self._context.close()
         if self._browser:
@@ -499,6 +506,116 @@ class BrowserEngine(BrowserBackend):
         path = SCREENSHOT_DIR / f"{name_hint}_{int(time.time() * 1000)}.png"
         await self.page.screenshot(path=str(path), full_page=False)
         return str(path)
+
+    # ------------------------------------------------------------------ #
+    # Live view streaming (CDP screencast)
+    # ------------------------------------------------------------------ #
+    async def start_screencast(
+        self,
+        on_frame: Callable[[bytes, dict[str, Any]], Any],
+        *,
+        quality: int = 70,
+        max_width: int = 1280,
+        max_height: int = 900,
+        every_nth_frame: int = 1,
+    ) -> bool:
+        """
+        Starts a raw CDP `Page.startScreencast` session on the active page
+        so `on_frame(jpeg_bytes, event_params)` fires automatically every
+        time Chrome actually repaints the page -- event-driven, near
+        real-time video rather than backend/browser/live_session.py polling
+        `page.screenshot()` on a fixed timer. `on_frame` may be sync or an
+        async function/bound method; a coroutine result is scheduled via
+        `asyncio.create_task`.
+
+        Chrome pauses the stream after each frame until it receives a
+        `Page.screencastFrameAck` for that frame, so that's sent
+        automatically here too -- callers never need to touch acking.
+
+        Returns False (leaving no session running) if a CDP session
+        couldn't be opened or `Page.startScreencast` fails for any reason,
+        so callers can fall back to polling instead of getting stuck with
+        no frames at all.
+        """
+        if self._screencast_session is not None:
+            await self.stop_screencast()
+
+        try:
+            page = self.page
+        except BrowserEngineError:
+            return False
+        if self._context is None:
+            return False
+
+        try:
+            cdp = await self._context.new_cdp_session(page)
+        except Exception as exc:
+            logger.debug("start_screencast: failed to open CDP session (%s)", exc)
+            return False
+
+        def _handle_frame(params: dict[str, Any]) -> None:
+            session_id = params.get("sessionId")
+            try:
+                frame_bytes = base64.b64decode(params["data"])
+            except Exception as exc:
+                logger.debug("start_screencast: failed to decode frame (%s)", exc)
+                frame_bytes = b""
+            if frame_bytes:
+                result = on_frame(frame_bytes, params)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            if session_id is not None:
+                asyncio.create_task(self._ack_screencast_frame(session_id))
+
+        cdp.on("Page.screencastFrame", _handle_frame)
+
+        try:
+            await cdp.send(
+                "Page.startScreencast",
+                {
+                    "format": "jpeg",
+                    "quality": quality,
+                    "maxWidth": max_width,
+                    "maxHeight": max_height,
+                    "everyNthFrame": every_nth_frame,
+                },
+            )
+        except Exception as exc:
+            logger.debug("start_screencast: Page.startScreencast failed (%s)", exc)
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
+            return False
+
+        self._screencast_session = cdp
+        logger.info("CDP screencast started (quality=%d max=%dx%d)", quality, max_width, max_height)
+        return True
+
+    async def _ack_screencast_frame(self, session_id: int) -> None:
+        cdp = self._screencast_session
+        if cdp is None:
+            return
+        try:
+            await cdp.send("Page.screencastFrameAck", {"sessionId": session_id})
+        except Exception as exc:
+            # Common right at stream teardown -- the session may already be
+            # detached by the time this scheduled task runs.
+            logger.debug("Page.screencastFrameAck failed (%s)", exc)
+
+    async def stop_screencast(self) -> None:
+        cdp = self._screencast_session
+        self._screencast_session = None
+        if cdp is None:
+            return
+        try:
+            await cdp.send("Page.stopScreencast")
+        except Exception as exc:
+            logger.debug("Page.stopScreencast failed (%s)", exc)
+        try:
+            await cdp.detach()
+        except Exception as exc:
+            logger.debug("CDP session detach failed (%s)", exc)
 
     async def auto_handle_security_verification(self) -> bool:
         """

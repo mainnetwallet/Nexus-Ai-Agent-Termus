@@ -5,15 +5,26 @@ Lets a client "watch" whichever website the agent is currently driving, in
 (near) real time -- without touching how BrowserEngine or TaskQueueService
 work internally. It only *observes* whatever BrowserEngine the task queue
 currently has active (`TaskQueueService.current_engine`); it never creates,
-owns, or controls a browser itself.
+owns, or controls a browser itself. Read-only: nothing here ever clicks,
+types, or otherwise drives the page -- it only watches it.
 
 Two ways to consume it (both wired up in backend/api/routes_browser.py):
 - Poll `GET /api/browser/status` and `GET /api/browser/screenshot` for a
   simple request/response integration.
 - Open `WS /api/browser/ws/live` for push-based streaming: the manager
   broadcasts a JSON frame (base64 JPEG + url/title/task metadata) to every
-  connected client on a fixed interval, and again immediately on any
-  meaningful page change caught by the polling loop.
+  connected client.
+
+Frames are event-driven, not fixed-interval polling: whenever the active
+engine supports it (BrowserEngine and AndroidBrowserBackend both do), this
+opens a raw CDP `Page.startScreencast` session on the active page, so
+Chrome pushes a new frame the moment it actually repaints instead of this
+manager screenshotting on a timer -- this is what makes the view look like
+smooth, near real-time video rather than a choppy screenshot slideshow.
+If a screencast session can't be started (older engine, CDP call fails,
+...), this transparently falls back to the previous behavior of polling
+`page.screenshot()` every `settings.live_session_interval_ms`, so the
+live view degrades gracefully instead of going blank.
 """
 from __future__ import annotations
 
@@ -36,8 +47,10 @@ logger = logging.getLogger("nexus.live_session")
 class LiveSessionManager:
     """
     Singleton-ish helper (one instance lives on `backend.api.app_state.state`)
-    that periodically screenshots whatever BrowserEngine is currently active
-    and fans the result out to connected WebSocket clients.
+    that streams frames of whatever BrowserEngine is currently active out to
+    connected WebSocket clients -- via an event-driven CDP screencast when
+    the engine supports it, falling back to periodic `page.screenshot()`
+    polling otherwise.
     """
 
     def __init__(
@@ -61,8 +74,15 @@ class LiveSessionManager:
         self._latest_title: str = ""
         self._latest_task_id: Optional[str] = None
         self._latest_captured_at: float = 0.0
+        self._latest_title_fetched_at: float = 0.0
         self._frame_count: int = 0
         self._last_error: Optional[str] = None
+
+        # "screencast" once an event-driven CDP session is streaming frames
+        # for `_screencast_engine`; "poll" while falling back to fixed-
+        # interval page.screenshot(); "idle" when no engine is active.
+        self._capture_mode: str = "idle"
+        self._screencast_engine: Optional[AnyBrowserBackend] = None
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -131,6 +151,7 @@ class LiveSessionManager:
             "stream_interval_ms": self._interval_ms,
             "jpeg_quality": self._jpeg_quality,
             "last_error": self._last_error,
+            "capture_mode": self._capture_mode,
         }
 
     def latest_screenshot_bytes(self) -> Optional[bytes]:
@@ -156,23 +177,118 @@ class LiveSessionManager:
 
     async def _poll_loop(self) -> None:
         was_active = False
-        while True:
+        active_engine: Optional[AnyBrowserBackend] = None
+        # While a screencast is running, frames arrive on their own via
+        # `_on_screencast_frame` -- this loop tick then only needs to run
+        # often enough to notice the active engine changing or ending, not
+        # on every frame, so it can sleep longer than the polling interval.
+        supervise_interval_s = min(self._interval_ms, 500) / 1000
+
+        try:
+            while True:
+                try:
+                    engine = self._engine_provider()
+
+                    if engine is not active_engine:
+                        if active_engine is not None and self._capture_mode == "screencast":
+                            await self._stop_screencast(active_engine)
+                        active_engine = engine
+                        self._capture_mode = "idle"
+                        if engine is not None:
+                            self._capture_mode = await self._start_capture_mode(engine)
+
+                    if engine is not None:
+                        was_active = True
+                        if self._capture_mode == "poll":
+                            await self._capture(engine)
+                    elif was_active:
+                        # The active task just ended -- tell clients the
+                        # session went idle so a UI can show a "no active
+                        # browser" state.
+                        was_active = False
+                        await self._broadcast(json.dumps({"type": "idle"}))
+
+                    sleep_s = supervise_interval_s if self._capture_mode == "screencast" else self._interval_ms / 1000
+                    await asyncio.sleep(sleep_s)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Live session poll loop error")
+                    await asyncio.sleep(self._interval_ms / 1000)
+        finally:
+            if active_engine is not None and self._capture_mode == "screencast":
+                await self._stop_screencast(active_engine)
+            self._capture_mode = "idle"
+            self._screencast_engine = None
+
+    async def _start_capture_mode(self, engine: AnyBrowserBackend) -> str:
+        """Tries to attach an event-driven CDP screencast session to
+        `engine` (see BrowserEngine.start_screencast /
+        AndroidBrowserBackend.start_screencast); returns "poll" instead
+        when the engine doesn't support it or starting the session fails
+        for any reason, so the fixed-interval `page.screenshot()` fallback
+        below keeps clients fed instead of leaving them with no frames."""
+        start = getattr(engine, "start_screencast", None)
+        if start is None:
+            return "poll"
+        try:
+            started = bool(
+                await start(
+                    self._on_screencast_frame,
+                    quality=self._jpeg_quality,
+                    max_width=settings.live_session_max_width,
+                    max_height=settings.live_session_max_height,
+                    every_nth_frame=settings.live_session_every_nth_frame,
+                )
+            )
+        except Exception as exc:
+            logger.debug("Live session screencast start failed, falling back to polling (%s)", exc)
+            started = False
+
+        if not started:
+            return "poll"
+        self._screencast_engine = engine
+        logger.info("Live session streaming via CDP screencast (event-driven)")
+        return "screencast"
+
+    async def _stop_screencast(self, engine: AnyBrowserBackend) -> None:
+        stop = getattr(engine, "stop_screencast", None)
+        if stop is None:
+            return
+        try:
+            await stop()
+        except Exception as exc:
+            logger.debug("Live session screencast stop failed (%s)", exc)
+        finally:
+            self._screencast_engine = None
+
+    async def _on_screencast_frame(self, frame_bytes: bytes, meta: dict[str, Any]) -> None:
+        """Callback handed to `engine.start_screencast`; fires once per
+        painted frame Chrome pushes over CDP."""
+        self._last_error = None
+        self._latest_frame_bytes = frame_bytes
+        self._latest_frame_b64 = base64.b64encode(frame_bytes).decode("ascii")
+
+        now = time.time()
+        engine = self._engine_provider()
+        # Refetching title/url on every frame (screencast can push well
+        # over 10fps on an animated page) is unnecessary overhead for
+        # metadata that changes rarely -- throttle it instead.
+        if engine is not None and (now - self._latest_title_fetched_at) > 0.25:
             try:
-                engine = self._engine_provider()
-                if engine is not None:
-                    await self._capture(engine)
-                    was_active = True
-                elif was_active:
-                    # The active task just ended -- tell clients the session
-                    # went idle so a UI can show a "no active browser" state.
-                    was_active = False
-                    await self._broadcast(json.dumps({"type": "idle"}))
-                await asyncio.sleep(self._interval_ms / 1000)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("Live session poll loop error")
-                await asyncio.sleep(self._interval_ms / 1000)
+                self._latest_url = engine.page.url
+                self._latest_title = await engine.page.title()
+            except Exception as exc:
+                logger.debug("Failed to read page url/title for screencast frame (%s)", exc)
+            self._latest_title_fetched_at = now
+
+        self._latest_task_id = self._task_id_provider()
+        self._latest_captured_at = now
+        self._frame_count += 1
+
+        payload = self._current_frame_payload()
+        if payload:
+            await self._broadcast(payload)
 
     async def _capture(self, engine: AnyBrowserBackend) -> None:
         try:

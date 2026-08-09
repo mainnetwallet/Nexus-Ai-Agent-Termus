@@ -29,7 +29,7 @@ import logging
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from backend.browser.backend_base import BrowserBackend
 from backend.browser.cdp_client import CDPBrowser, CDPError, CDPTarget, find_chromium_binary
@@ -242,6 +242,11 @@ class AndroidBrowserBackend(BrowserBackend):
         self._browser: Optional[CDPBrowser] = None
         self._targets: dict[str, CDPTarget] = {}
         self._active_id: Optional[str] = None
+        # Target + listener backing an active Page.startScreencast stream
+        # (see start_screencast/stop_screencast below), or None when the
+        # live session view is falling back to page.screenshot() polling.
+        self._screencast_target: Optional[CDPTarget] = None
+        self._screencast_handler: Optional[Callable[[dict], Any]] = None
 
     @property
     def user_data_dir(self) -> str | None:
@@ -276,6 +281,8 @@ class AndroidBrowserBackend(BrowserBackend):
         logger.info("Android CDP browser started (port=%d headless=%s)", self._browser.port, self._headless)
 
     async def stop(self) -> None:
+        if self._screencast_target is not None:
+            await self.stop_screencast()
         if self._browser:
             await self._browser.stop()
         self._targets.clear()
@@ -454,6 +461,94 @@ class AndroidBrowserBackend(BrowserBackend):
         data = base64.b64decode(result["data"])
         path.write_bytes(data)
         return str(path)
+
+    # ------------------------------------------------------------------ #
+    # Live view streaming (CDP screencast)
+    # ------------------------------------------------------------------ #
+    async def start_screencast(
+        self,
+        on_frame: Callable[[bytes, dict[str, Any]], Any],
+        *,
+        quality: int = 70,
+        max_width: int = 1280,
+        max_height: int = 900,
+        every_nth_frame: int = 1,
+    ) -> bool:
+        """
+        Mirrors `BrowserEngine.start_screencast` (backend/browser/engine.py)
+        using the raw CDP `Page.startScreencast` command directly against
+        the active tab's `CDPTarget` -- no new abstraction needed since
+        this backend already speaks raw CDP. `on_frame` fires on every
+        `Page.screencastFrame` event via `CDPTarget.on_event`'s persistent
+        listener (unlike `wait_for_event`, which only fires once); each
+        frame is acked automatically so Chrome keeps streaming.
+        """
+        if self._screencast_target is not None:
+            await self.stop_screencast()
+        try:
+            target = self._target()
+        except BrowserEngineError:
+            return False
+
+        def _handle_frame(params: dict[str, Any]) -> None:
+            session_id = params.get("sessionId")
+            try:
+                frame_bytes = base64.b64decode(params["data"])
+            except Exception as exc:
+                logger.debug("start_screencast: failed to decode frame (%s)", exc)
+                frame_bytes = b""
+            if frame_bytes:
+                result = on_frame(frame_bytes, params)
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+            if session_id is not None:
+                asyncio.create_task(self._ack_screencast_frame(target, session_id))
+
+        target.on_event("Page.screencastFrame", _handle_frame)
+
+        try:
+            await target.send(
+                "Page.startScreencast",
+                {
+                    "format": "jpeg",
+                    "quality": quality,
+                    "maxWidth": max_width,
+                    "maxHeight": max_height,
+                    "everyNthFrame": every_nth_frame,
+                },
+            )
+        except CDPError as exc:
+            logger.debug("start_screencast: Page.startScreencast failed (%s)", exc)
+            target.off_event("Page.screencastFrame", _handle_frame)
+            return False
+
+        self._screencast_target = target
+        self._screencast_handler = _handle_frame
+        logger.info("Android CDP screencast started (quality=%d max=%dx%d)", quality, max_width, max_height)
+        return True
+
+    @staticmethod
+    async def _ack_screencast_frame(target: CDPTarget, session_id: int) -> None:
+        try:
+            await target.send("Page.screencastFrameAck", {"sessionId": session_id})
+        except CDPError as exc:
+            # Common right at stream teardown -- the target may already be
+            # gone/closed by the time this scheduled task runs.
+            logger.debug("Page.screencastFrameAck failed (%s)", exc)
+
+    async def stop_screencast(self) -> None:
+        target = self._screencast_target
+        handler = self._screencast_handler
+        self._screencast_target = None
+        self._screencast_handler = None
+        if target is None:
+            return
+        try:
+            await target.send("Page.stopScreencast")
+        except CDPError as exc:
+            logger.debug("Page.stopScreencast failed (%s)", exc)
+        if handler is not None:
+            target.off_event("Page.screencastFrame", handler)
 
     async def eval_js(self, expression: str, default: Any = None) -> Any:
         try:

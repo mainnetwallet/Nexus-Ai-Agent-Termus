@@ -27,7 +27,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -80,7 +80,14 @@ class CDPTarget:
         self._ws = ws
         self._id_counter = itertools.count(1)
         self._pending: dict[int, asyncio.Future] = {}
+        # One-shot waiters (wait_for_event): consumed on the first matching
+        # event, then discarded.
         self._event_waiters: dict[str, list[asyncio.Future]] = {}
+        # Persistent listeners (on_event/off_event): kept around and
+        # invoked on *every* matching event -- used by screencast streaming
+        # (Page.screencastFrame fires repeatedly for as long as the stream
+        # is active), unlike wait_for_event's single-shot semantics.
+        self._event_listeners: dict[str, list[Callable[[dict], Any]]] = {}
         self._reader_task: asyncio.Task | None = None
         self.url: str = ""
 
@@ -117,6 +124,14 @@ class CDPTarget:
             for fut in waiters:
                 if not fut.done():
                     fut.set_result(params)
+        for callback in list(self._event_listeners.get(method, ())):
+            try:
+                result = callback(params)
+            except Exception:  # noqa: BLE001 - one bad listener must not kill the read loop
+                logger.exception("CDP event listener for %s raised", method)
+                continue
+            if asyncio.iscoroutine(result):
+                asyncio.create_task(result)
 
     async def send(self, method: str, params: dict | None = None, timeout: float = 30.0) -> dict:
         req_id = next(self._id_counter)
@@ -136,6 +151,26 @@ class CDPTarget:
             return await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError as exc:
             raise CDPError(f"Timed out waiting for CDP event {method}") from exc
+
+    def on_event(self, method: str, callback: Callable[[dict], Any]) -> None:
+        """Registers `callback` to run on *every* future `method` event
+        (sync or async -- an async callback's coroutine is scheduled via
+        `asyncio.create_task`), unlike `wait_for_event` which resolves once
+        and forgets. Used for repeating streams like
+        `Page.screencastFrame`. Call `off_event` with the same callback to
+        stop receiving events."""
+        self._event_listeners.setdefault(method, []).append(callback)
+
+    def off_event(self, method: str, callback: Callable[[dict], Any]) -> None:
+        listeners = self._event_listeners.get(method)
+        if not listeners:
+            return
+        try:
+            listeners.remove(callback)
+        except ValueError:
+            pass
+        if not listeners:
+            self._event_listeners.pop(method, None)
 
     async def evaluate(self, expression: str, await_promise: bool = True, timeout: float = 30.0) -> Any:
         result = await self.send(
