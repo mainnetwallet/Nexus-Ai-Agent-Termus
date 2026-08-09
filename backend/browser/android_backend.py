@@ -281,10 +281,19 @@ class AndroidBrowserBackend(BrowserBackend):
         logger.info("Android CDP browser started (port=%d headless=%s)", self._browser.port, self._headless)
 
     async def stop(self) -> None:
+        """Same defensiveness as CDPBrowser.stop() below: a screencast-detach
+        failure must never skip self._browser.stop(), which is what actually
+        terminates the chromium subprocess/window."""
         if self._screencast_target is not None:
-            await self.stop_screencast()
+            try:
+                await self.stop_screencast()
+            except Exception as exc:
+                logger.debug("stop: stop_screencast failed (%s)", exc)
         if self._browser:
-            await self._browser.stop()
+            try:
+                await self._browser.stop()
+            except Exception as exc:
+                logger.warning("stop: browser.stop failed, window may be left open (%s)", exc)
         self._targets.clear()
         self._active_id = None
         logger.info("Android CDP browser stopped")
@@ -548,7 +557,10 @@ class AndroidBrowserBackend(BrowserBackend):
         except CDPError as exc:
             logger.debug("Page.stopScreencast failed (%s)", exc)
         if handler is not None:
-            target.off_event("Page.screencastFrame", handler)
+            try:
+                target.off_event("Page.screencastFrame", handler)
+            except Exception as exc:
+                logger.debug("stop_screencast: off_event failed (%s)", exc)
 
     async def eval_js(self, expression: str, default: Any = None) -> Any:
         try:

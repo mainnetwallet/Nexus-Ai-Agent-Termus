@@ -696,7 +696,13 @@ class TaskQueueService:
                 other = next(iter(self.running.items()), None)
                 self.current_engine = other[1]["engine"] if other else None
                 self.current_task_id = other[0] if other else None
-            await engine.stop()
+            try:
+                await engine.stop()
+            except Exception:
+                # engine.stop() is defensive internally, but guard here too so
+                # a truly unexpected failure still lets profile release run
+                # below instead of leaking the profile lock forever.
+                logger.exception("engine.stop() failed for task %s -- browser process may be left running", task.id)
             if loaded_profile is not None and self.profiles is not None:
                 try:
                     await self.profiles.release(loaded_profile.id)

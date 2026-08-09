@@ -288,7 +288,10 @@ class CDPBrowser:
     async def close_target(self, target_id: str) -> None:
         target = self._targets.pop(target_id, None)
         if target:
-            await target.close()
+            try:
+                await target.close()
+            except Exception as exc:
+                logger.debug("close_target: websocket close failed for %s (%s)", target_id, exc)
         try:
             await self._http.get(f"{self.http_base}/json/close/{target_id}")
         except httpx.HTTPError:
@@ -306,7 +309,17 @@ class CDPBrowser:
                     pass
 
     async def stop(self) -> None:
+        """Closing individual targets is best-effort -- one already-dead
+        websocket or a page the site itself closed must never stop this from
+        reaching self.kill() at the end, or the chromium subprocess (and its
+        visible window) is left running indefinitely."""
         for target_id in list(self._targets.keys()):
-            await self.close_target(target_id)
-        await self._http.aclose()
+            try:
+                await self.close_target(target_id)
+            except Exception as exc:
+                logger.debug("stop: close_target failed for %s (%s)", target_id, exc)
+        try:
+            await self._http.aclose()
+        except Exception as exc:
+            logger.debug("stop: http client aclose failed (%s)", exc)
         self.kill()

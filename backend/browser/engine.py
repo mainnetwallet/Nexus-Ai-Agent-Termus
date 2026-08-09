@@ -170,14 +170,31 @@ class BrowserEngine(BrowserBackend):
         return self._user_data_dir
 
     async def stop(self) -> None:
+        """Tears down every layer (screencast, context, browser, playwright)
+        independently -- one step failing (e.g. the context already crashed,
+        or the page/window was closed manually mid-task) must never skip the
+        later steps, or the actual browser process/window is left running
+        forever instead of closing."""
         if self._screencast_session is not None:
-            await self.stop_screencast()
+            try:
+                await self.stop_screencast()
+            except Exception as exc:
+                logger.debug("stop: stop_screencast failed (%s)", exc)
         if self._context:
-            await self._context.close()
+            try:
+                await self._context.close()
+            except Exception as exc:
+                logger.debug("stop: context.close failed (%s)", exc)
         if self._browser:
-            await self._browser.close()
+            try:
+                await self._browser.close()
+            except Exception as exc:
+                logger.warning("stop: browser.close failed, window may be left open (%s)", exc)
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception as exc:
+                logger.debug("stop: playwright.stop failed (%s)", exc)
         logger.info("Browser engine stopped")
 
     def _register_page(self, page: Page) -> str:
