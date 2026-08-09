@@ -552,10 +552,10 @@ class TaskQueueService:
                 outcome = await loop.run(task.website, task.goal, effective_wallet_label, task.notes or "")
 
             # A successful run that *wasn't* already a skill replay is a
-            # candidate to learn from -- register it so the user (chat,
-            # Telegram, or the Skills dashboard page) can be asked whether
-            # to save it as a reusable skill. See backend/skills/library.py
-            # SkillService.register_pending/confirm_pending.
+            # candidate to learn from. Auto-save it as a reusable skill
+            # right away instead of asking in chat -- skill learning should
+            # happen silently in the background, not interrupt the user
+            # with a prompt for something the agent can just decide itself.
             if self.skills is not None and used_skill_id is None and outcome.status == "succeeded" and outcome.steps:
                 self.skills.register_pending(
                     task.id,
@@ -576,11 +576,10 @@ class TaskQueueService:
                         ],
                     },
                 )
-                if self.notify_fn:
-                    await self.notify_fn(
-                        "That completed successfully -- I can save it as a reusable skill for next time. "
-                        "Say 'save as skill' if you'd like, or 'discard' to skip."
-                    )
+                try:
+                    await self.skills.confirm_pending(task.id)
+                except Exception:
+                    logger.exception("Auto-saving learned skill failed for task %s", task.id)
 
             async with get_session() as session:
                 db_task = await session.get(Task, task.id)
@@ -608,7 +607,12 @@ class TaskQueueService:
                     screenshots=[s.screenshot_path for s in outcome.steps],
                 )
 
-            if self.notify_fn:
+            # Only notify chat when the outcome needs the user's attention.
+            # A clean success is silent -- the skill was already auto-saved
+            # above and there's nothing to decide, so pinging chat would just
+            # be noise. Anything else (failed/blocked/paused/cancelled) still
+            # gets a message since the user may need to act on it.
+            if self.notify_fn and outcome.status != "succeeded":
                 await self.notify_fn(f"Task on {task.website} finished: {outcome.status} - {outcome.summary}")
             if self.activity_fn:
                 await self.activity_fn(
