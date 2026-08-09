@@ -4,9 +4,9 @@
 #   - chromadb   (semantic memory/skill search -- SQLite keyword-ranking
 #                 fallback is used automatically when absent, see
 #                 backend/search/)
-#   - playwright (browser automation -- unavailable on Android until a
-#                 device-driven backend exists, see
-#                 backend/browser/android_backend.py)
+#   - playwright (browser automation -- not used on Android; a separate
+#                 CDP-based backend drives a `pkg install chromium` binary
+#                 there instead, see backend/browser/android_backend.py)
 #   - psutil     (CPU/RAM resource metrics -- degrade to None when absent,
 #                 see backend/monitoring/resources.py)
 #

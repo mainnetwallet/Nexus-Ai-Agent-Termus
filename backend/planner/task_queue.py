@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from backend.browser.engine import BrowserEngine
+from backend.browser.factory import AnyBrowserBackend, make_browser_backend
 from backend.config.settings import settings
 from backend.database.models import Report, Task, TaskStatus, TaskStep
 from backend.database.session import get_session
@@ -91,7 +92,7 @@ class TaskQueueService:
         # as the *most recently started* running task for backward
         # compatibility with existing Single Task Control (pause/resume/
         # cancel) call sites -- those still target "the" current task.
-        self.current_engine: Optional[BrowserEngine] = None
+        self.current_engine: Optional[AnyBrowserBackend] = None
         self.current_task_id: Optional[str] = None
 
         # Multi-Profile Browser Management: every task the worker loop has
@@ -285,7 +286,7 @@ class TaskQueueService:
             "concurrency": {"active": len(self.running), "max": self.max_concurrent_tasks},
         }
 
-    def get_engine_for_profile(self, profile_id: str) -> Optional[BrowserEngine]:
+    def get_engine_for_profile(self, profile_id: str) -> Optional[AnyBrowserBackend]:
         """Looks up the live BrowserEngine currently driving a task loaded
         against this Chrome Profile, if any -- used by routes_profiles.py
         so 'check sessions now' / the manual-open guard work correctly even
@@ -296,7 +297,7 @@ class TaskQueueService:
                 return info.get("engine")
         return None
 
-    def get_engine_for_task(self, task_id: str) -> Optional[BrowserEngine]:
+    def get_engine_for_task(self, task_id: str) -> Optional[AnyBrowserBackend]:
         info = self.running.get(task_id)
         return info.get("engine") if info else None
 
@@ -405,7 +406,7 @@ class TaskQueueService:
         elif task.profile_label and self.profiles is None:
             logger.warning("Task %s references profile_label=%s but no ProfileManager is configured -- ignoring", task.id, task.profile_label)
 
-        engine = BrowserEngine(user_data_dir=loaded_profile.chrome_profile_dir if loaded_profile else None)
+        engine = make_browser_backend(user_data_dir=loaded_profile.chrome_profile_dir if loaded_profile else None)
         await engine.start()
         self.current_engine = engine
         self.current_task_id = task.id

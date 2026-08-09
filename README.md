@@ -245,7 +245,32 @@ Agent still runs there -- it just falls back automatically:
 |------------|--------------------|
 | ChromaDB   | Semantic memory/skill search falls back to SQLite keyword ranking (`backend/search/`) |
 | psutil     | CPU/RAM metrics report as unavailable instead of crashing (`backend/monitoring/resources.py`) |
-| Playwright | Browser automation is unavailable until a device-driven backend is added (`backend/browser/android_backend.py`) |
+| Playwright | Not used on Android at all -- browser automation instead drives a `pkg install chromium` binary directly over the Chrome DevTools Protocol (`backend/browser/android_backend.py`, `backend/browser/cdp_client.py`), no Playwright required |
+
+Browser automation on Termux:
+
+```bash
+pkg install chromium     # inside Termux, in addition to python/git below
+```
+
+`backend/browser/factory.py` picks `AndroidBrowserBackend` automatically
+whenever `platform_info.capabilities.is_android` is true, so
+`backend/planner/task_queue.py` and the MCP connectors need no changes to
+use it. If no `chromium`/`chromium-browser`/`chrome` binary is found on
+`PATH` (or at `browser_executable_path` in `.env`), `.available` is
+`False` with a clear `.unavailable_reason` instead of crashing the task.
+CDP talks over a plain loopback WebSocket
+(`backend/browser/cdp_ws.py`), implemented without the `websockets`
+package on purpose -- its wheels are built for glibc ("manylinux") and
+Termux uses Bionic libc, so installing it there would otherwise require a
+full C compiler toolchain.
+
+Known limitation vs. the Playwright engine: this backend can only see and
+interact with the main document, not cross-origin iframes, so CAPTCHA/
+Cloudflare-Turnstile widgets embedded in an iframe (the common case)
+aren't auto-solvable the way `engine.py`'s iframe-traversal code attempts
+on desktop -- those still need a person to solve them via a manual
+session.
 
 ```bash
 pkg install python git   # inside Termux
