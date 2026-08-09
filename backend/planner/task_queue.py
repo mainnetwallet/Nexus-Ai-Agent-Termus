@@ -429,20 +429,19 @@ class TaskQueueService:
         self._task_pause_events[task.id] = pause_event
 
         async def on_step(step_result):
+            # Routine per-step progress ("step N: action -> ok") no longer goes to
+            # chat -- it's noisy and the user doesn't need it turn by turn. It still
+            # flows into activity_fn below for any live status/log panel. Chat only
+            # gets pinged when the agent actually needs the user: a failed step
+            # (so they can give fix advice) or a NEED_HUMAN_INPUT pause.
             if self.notify_fn:
-                status_str = 'ok' if step_result.success else 'FAILED'
-                msg = (
-                    f"[{task.website}] step {step_result.index}: {step_result.action} "
-                    f"'{step_result.target}' -> {status_str}"
-                )
-                await self.notify_fn(msg)
-                # Send detailed error notification so user can reply with fix advice
                 if not step_result.success and step_result.note:
                     await self.notify_fn(
-                        f"⚠️ Error detail: {step_result.note}. "
-                        f"Reply in chat with fix advice to retry (e.g. 'click Join button instead' or 'scroll down')."
+                        f"⚠️ Stuck on step {step_result.index} ({step_result.action} '{step_result.target}'): "
+                        f"{step_result.note}. Reply in chat with fix advice to retry "
+                        f"(e.g. 'click Join button instead' or 'scroll down')."
                     )
-                # If this is a NEED_HUMAN_INPUT pause, also send a clear prompt to the chat so the user sees it.
+                # If this is a NEED_HUMAN_INPUT pause, send a clear prompt to the chat so the user sees it.
                 if step_result.note and step_result.note.startswith('NEED_HUMAN_INPUT'):
                     await self.notify_fn(
                         f"🛑 Task paused: {step_result.note}. Please provide the required information in chat to resume."
