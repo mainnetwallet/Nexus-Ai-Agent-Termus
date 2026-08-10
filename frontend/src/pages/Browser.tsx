@@ -96,12 +96,12 @@ export function Browser() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader className="flex-row items-center justify-between">
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
             <CardTitle className="flex items-center gap-2">
               <MonitorPlay className="size-4 text-[var(--color-signal-cyan)]" />
               Live Stream
             </CardTitle>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {active && (
                 <Badge variant={isStreaming ? "green" : "neutral"}>
                   {isStreaming ? "streaming" : captureMode === "poll" ? "polling" : "connecting…"}

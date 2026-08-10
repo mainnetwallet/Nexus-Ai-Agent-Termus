@@ -54,7 +54,7 @@ export function Tasks() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-amber)]">Queue</p>
           <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Tasks</h1>
@@ -62,7 +62,7 @@ export function Tasks() {
             Point the agent at a website and a goal. It plans, acts, and verifies on its own.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={toggleQueue}>
             {queueStatus.data?.worker_paused ? (
               <>

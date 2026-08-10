@@ -11,7 +11,10 @@ export const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center gap-1 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-1",
+      // max-w-full + overflow-x-auto: on a phone, a tab bar with several
+      // labels can be wider than the screen -- scroll the tab bar itself
+      // horizontally instead of letting it force the whole page to scroll.
+      "inline-flex h-9 max-w-full items-center gap-1 overflow-x-auto rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] p-1",
       className
     )}
     {...props}
@@ -26,7 +29,7 @@ export const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "inline-flex items-center rounded-sm px-3 py-1 text-xs font-medium text-[var(--color-text-muted)] transition-colors data-[state=active]:bg-[var(--color-signal-amber-dim)] data-[state=active]:text-[var(--color-signal-amber)]",
+      "inline-flex shrink-0 items-center whitespace-nowrap rounded-sm px-3 py-1 text-xs font-medium text-[var(--color-text-muted)] transition-colors data-[state=active]:bg-[var(--color-signal-amber-dim)] data-[state=active]:text-[var(--color-signal-amber)]",
       className
     )}
     {...props}

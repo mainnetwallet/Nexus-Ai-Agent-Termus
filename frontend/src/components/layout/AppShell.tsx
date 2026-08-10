@@ -162,7 +162,7 @@ export function AppShell() {
         </div>
       </aside>
 
-      <main className="min-w-0 flex-1 overflow-y-auto pt-14 lg:pt-0">
+      <main className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-14 lg:pt-0">
         <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
           <Outlet />
         </div>

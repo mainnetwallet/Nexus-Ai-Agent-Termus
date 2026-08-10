@@ -149,7 +149,7 @@ export function Chat() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-cyan)]">
             Conversational interface
@@ -159,7 +159,7 @@ export function Chat() {
             Talk to the agent naturally — ask questions, give it tasks, or control it directly.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="ghost" size="sm" onClick={exportChat} disabled={!sessionId || messages.length === 0}>
             <Download className="size-4" />
             Export

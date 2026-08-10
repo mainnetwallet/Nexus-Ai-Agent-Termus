@@ -67,7 +67,7 @@ export function Wallets() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-amber)]">
             Multi Wallet Manager
@@ -79,7 +79,7 @@ export function Wallets() {
             extension.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="subtle" onClick={handleExport}>
             <Download className="size-4" /> Export metadata
           </Button>
@@ -102,7 +102,7 @@ export function Wallets() {
         </div>
       </div>
 
-      <div className="grid grid-cols-[1fr_360px] gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_360px]">
         <div className="flex flex-col gap-4">
           <div className="flex gap-2">
             <div className="relative flex-1">

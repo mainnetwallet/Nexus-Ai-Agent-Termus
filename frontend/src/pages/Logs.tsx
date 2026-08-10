@@ -82,7 +82,7 @@ export function Logs() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-text-muted)]">Console</p>
           <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Logs</h1>
@@ -90,7 +90,7 @@ export function Logs() {
             Tail of {logs.data?.file ?? "the backend log file"}.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="subtle" size="sm" onClick={() => setLive((v) => !v)}>
             {live ? <Pause className="size-4" /> : <Play className="size-4" />}
             {live ? "Pause" : "Resume"}

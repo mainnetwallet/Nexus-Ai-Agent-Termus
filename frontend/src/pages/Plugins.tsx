@@ -65,7 +65,7 @@ export function Plugins() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-text-muted)]">Extensibility</p>
           <h1 className="mt-1 text-2xl font-semibold text-[var(--color-text)]">Plugins</h1>

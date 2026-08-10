@@ -191,7 +191,7 @@ export function Skills() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-[var(--color-signal-violet)]">
             Skill Learning System
@@ -262,7 +262,7 @@ export function Skills() {
         </Card>
       )}
 
-      <div className="grid grid-cols-[1fr_380px] gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
         <div className="flex flex-col gap-4">
           <div className="flex gap-2">
             <div className="relative flex-1">
